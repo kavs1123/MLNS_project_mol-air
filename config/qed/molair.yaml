@@ -13,7 +13,15 @@ QED-MolAIR:
     num_envs: 64
     seed: 0
     total_time_steps: 120000
+    num_inference_envs: 8
+    n_inference_episodes: 1000
     summary_freq: 1000
     device: cuda
   CountIntReward:
     crwd_coef: 0.01
+  Inference:
+    num_envs: 64
+    n_episodes: 10000
+    seed: 0
+    device: cuda
+    ckpt: best

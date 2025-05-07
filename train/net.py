@@ -8,6 +8,8 @@ import drl.agent as agent
 import drl.net as net
 from drl.policy import CategoricalPolicy
 from drl.policy_dist import CategoricalDist
+from drl.agent.dreamer_v3 import DreamerNetwork
+from drl.agent.net import PretrainedRecurrentNetwork
 
 
 def init_linear_weights(model: nn.Module) -> None:
@@ -207,3 +209,23 @@ class SelfiesRecurrentPPORNDNet(nn.Module, agent.RecurrentPPORNDNetwork):
     
     def forward_rnd(self, obs: torch.Tensor, hidden_state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         return self._rnd_net(obs, hidden_state)
+    
+class SelfiesDreamerV3Net(DreamerNetwork):
+    """DreamerV3 network implementation for SELFIES-based molecular generation."""
+    
+    def __init__(self, in_features: int, num_actions: int, temperature: float = 1.0) -> None:
+        super().__init__(
+            in_features=in_features,
+            num_actions=num_actions,
+            hidden_size=256,
+            state_size=32,
+            rnn_hidden_size=256,
+            discrete_size=32,
+            category_size=32,
+            layer_norm=True
+        )
+        
+        # Initialize weights using orthogonal initialization
+        for module in [self._encoder, self._decoder, self._actor, self._critic, 
+                      self._reward_model, self._continue_model, self._representation_model]:
+            init_linear_weights(module)

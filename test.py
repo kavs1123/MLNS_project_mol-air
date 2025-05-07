@@ -5,6 +5,7 @@ import numpy as np
 from envs.chem_env import ChemEnv, make_async_chem_env
 from train import MolRLTrainFactory
 import shutil
+import os
 
 class Test(unittest.TestCase):
     def test_chem_env(self):
@@ -135,6 +136,52 @@ class Test(unittest.TestCase):
             .close()
             
         print("=== test train MolAIR completed ===")
+    
+    def test_train_dreamer(self):
+        print("=== test train DreamerV3 ===")
+        
+        id = "Test_DreamerV3"
+        shutil.rmtree(f"results/{id}", ignore_errors=True)
+        config = {
+            "Agent": {
+                "type": "DreamerV3",
+                "n_steps": 64,
+                "lr": 3e-4,
+                "discount": 1.0,
+                "lambda_": 0.95,
+                "imagination_steps": 5,
+                "actor_entropy": 1e-3,
+                "critic_weight": 0.5,
+                "model_weight": 0.5,
+                "grad_clip": 100.0,
+                "init_norm_steps": 20,
+            },
+            "Env": {
+                "plogp_coef": 1.0,
+                "max_str_len": 10
+            },
+            "Train": {
+                "num_envs": 3,
+                "seed": 0,
+                "total_time_steps": 1000,
+                "summary_freq": 200,
+            },
+            "CountIntReward": {
+                "crwd_coef": 1.0
+            }
+        }
+        MolRLTrainFactory(id, config) \
+            .create_train() \
+            .train() \
+            .close()
+            
+        # Verify that results folder and files were created
+        results_dir = f"results/{id}"
+        self.assertTrue(os.path.exists(results_dir), f"Results directory {results_dir} not found")
+        self.assertTrue(os.path.exists(os.path.join(results_dir, "checkpoints")), "Checkpoints directory not found")
+        self.assertTrue(os.path.exists(os.path.join(results_dir, "tensorboard")), "Tensorboard directory not found")
+        
+        print("=== test train DreamerV3 completed ===")
     
 if __name__ == '__main__':
     unittest.main()

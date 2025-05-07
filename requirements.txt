@@ -9,3 +9,4 @@ networkx==2.6.3
 pandas==1.3.5
 tbparse==0.0.8
 molscore==1.8.3
+typing_extensions>=3.7.4

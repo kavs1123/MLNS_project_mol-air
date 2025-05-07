@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Type, Dict, Any, List
 
 import torch
 import torch.optim as optim
@@ -42,6 +42,146 @@ class CommonConfig:
     grad_clip_max_norm: float = 5.0
     pretrained_path: Optional[str] = None
     num_inference_envs: int = 0
+
+
+class AgentFactory:
+    """Factory class for creating agent instances based on configuration."""
+    
+    @staticmethod
+    def create_agent(agent_config: dict, env_config: dict, num_envs: int, device: Optional[str] = None) -> agent.Agent:
+        """Create an agent based on the provided configuration."""
+        agent_type = agent_config.get("type", "Pretrained").lower()
+        
+        if agent_type == "ppo":
+            return AgentFactory.__create_ppo_agent(agent_config, env_config, num_envs, device)
+        elif agent_type == "rnd":
+            return AgentFactory.__create_rnd_agent(agent_config, env_config, num_envs, device)
+        elif agent_type == "pretrained":
+            return AgentFactory.__create_pretrained_agent(agent_config, env_config, num_envs, device)
+        elif agent_type == "dreamerv3":
+            return AgentFactory.__create_dreamerv3_agent(agent_config, env_config, num_envs, device)
+        else:
+            raise ValueError(f"Agent type {agent_type} is not supported.")
+    
+    @staticmethod
+    def __create_pretrained_agent(agent_config: dict, env_config: dict, num_envs: int, device: Optional[str] = None) -> agent.PretrainedRecurrentAgent:
+        device = device or (agent_config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
+        with torch.device(device):
+            net_obj = SelfiesPretrainedNet(env_config["num_actions"])
+            return agent.PretrainedRecurrentAgent(
+                net_obj,
+                num_envs=num_envs,
+                device=device,
+                temperature=float(agent_config.get("temperature", 1.0))
+            )
+    
+    @staticmethod
+    def __create_ppo_agent(agent_config: dict, env_config: dict, num_envs: int, device: Optional[str] = None) -> agent.RecurrentPPO:
+        device = device or (agent_config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
+        with torch.device(device):
+            config = instance_from_dict(agent.RecurrentPPOConfig, agent_config)
+            network = net.SelfiesRecurrentPPONet(
+                env_config["obs_shape"][0],
+                env_config["num_actions"]
+            )
+            trainer = drl.Trainer(optim.Adam(
+                network.parameters(),
+                lr=agent_config.get("lr", 1e-3)
+            )).enable_grad_clip(network.parameters(), max_norm=agent_config.get("grad_clip_max_norm", 5.0))
+            
+            return agent.RecurrentPPO(
+                config=config,
+                network=network,
+                trainer=trainer,
+                num_envs=num_envs,
+                device=device
+            )
+    
+    @staticmethod
+    def __create_rnd_agent(agent_config: dict, env_config: dict, num_envs: int, device: Optional[str] = None) -> agent.RecurrentPPORND:
+        device = device or (agent_config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
+        with torch.device(device):
+            config = instance_from_dict(agent.RecurrentPPORNDConfig, agent_config)
+            network = net.SelfiesRecurrentPPORNDNet(
+                env_config["obs_shape"][0],
+                env_config["num_actions"],
+                temperature=float(agent_config.get("temperature", 1.0))
+            )
+            trainer = drl.Trainer(optim.Adam(
+                network.parameters(),
+                lr=agent_config.get("lr", 1e-3)
+            )).enable_grad_clip(network.parameters(), max_norm=agent_config.get("grad_clip_max_norm", 5.0))
+            
+            return agent.RecurrentPPORND(
+                config=config,
+                network=network,
+                trainer=trainer,
+                num_envs=num_envs,
+                device=device
+            )
+            
+    @staticmethod
+    def __create_dreamerv3_agent(agent_config: dict, env_config: dict, num_envs: int, device: Optional[str] = None) -> agent.DreamerV3:
+        # Check for GPU device
+        is_cuda = device == 'cuda' or (device is None and torch.cuda.is_available())
+        
+        # If we have a cuda device, handle memory limitations
+        if is_cuda:
+            # Check available GPU memory and adjust batch size accordingly
+            free_memory = 0
+            if torch.cuda.is_available():
+                try:
+                    # Get free memory in bytes, convert to GB
+                    free_memory = torch.cuda.mem_get_info()[0] / (1024**3)
+                    print(f"Available GPU memory: {free_memory:.2f} GB")
+                except:
+                    # Older PyTorch versions don't have mem_get_info
+                    free_memory = 2.0  # Assume 2GB as a conservative default
+            
+            # Set effective batch size based on available memory
+            effective_batch_size = min(num_envs, max(1, int(free_memory / 0.5)))  # Estimate 0.5GB per env
+            if effective_batch_size < num_envs:
+                print(f"WARNING: Reducing effective batch size for DreamerV3 to avoid CUDA OOM. Original: {num_envs}, New: {effective_batch_size}")
+                agent_config['effective_batch_size'] = effective_batch_size
+        
+        device = device or (agent_config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
+        network = net.SelfiesDreamerV3Net(
+            env_config["obs_shape"][0],
+            env_config["num_actions"],
+            temperature=float(agent_config.get("temperature", 1.0))
+        )
+        network = network.to(device)
+        
+        # Create a new dictionary with proper parameter types
+        kwargs = {}
+        
+        # Add essential parameters
+        kwargs['net'] = network
+        kwargs['num_envs'] = num_envs
+        kwargs['device'] = device
+        
+        # Extract configuration parameters, ensuring proper type conversion
+        for k, v in agent_config.items():
+            if k not in ["type", "device", "temperature"]:
+                if isinstance(v, str):
+                    if k in ['lr', 'discount', 'lambda_', 'actor_entropy', 'critic_weight', 
+                           'model_weight', 'reward_weight', 'continue_weight', 'kl_loss_scale', 
+                           'decoder_weight', 'grad_clip']:
+                        kwargs[k] = float(v)
+                    elif k in ['horizon', 'imagination_steps', 'n_steps']:
+                        kwargs[k] = int(v)
+                    elif k == 'init_norm_steps':
+                        kwargs[k] = int(v) if v.lower() != 'null' and v.lower() != 'none' else None
+                    else:
+                        kwargs[k] = v
+                else:
+                    kwargs[k] = v
+        
+        # Debug print to verify parameter types
+        print(f"DreamerV3 Parameters: {kwargs}")
+        
+        return agent.DreamerV3(**kwargs)
+
 
 class MolRLTrainFactory:
     """
@@ -138,70 +278,45 @@ class MolRLTrainFactory:
     
     def _create_agent(self, env: Env) -> agent.Agent:
         agent_type = self._agent_config["type"].lower()
+        agent_instance = None
+        
         if agent_type == "ppo":
-            return self._create_ppo_agent(env)
+            agent_instance = AgentFactory.create_agent(
+                self._agent_config, 
+                {"obs_shape": env.obs_shape, "num_actions": env.num_actions},
+                self._common_config.num_envs, 
+                self._common_config.device
+            )
         elif agent_type == "rnd":
-            return self._create_rnd_agent(env)
+            agent_instance = AgentFactory.create_agent(
+                self._agent_config, 
+                {"obs_shape": env.obs_shape, "num_actions": env.num_actions},
+                self._common_config.num_envs, 
+                self._common_config.device
+            )
         elif agent_type == "pretrained":
-            return self._create_pretrained_agent(env)
+            agent_instance = AgentFactory.create_agent(
+                self._agent_config,
+                {"num_actions": env.num_actions},
+                self._common_config.num_envs,
+                self._common_config.device
+            )
+        elif agent_type == "dreamerv3":
+            agent_instance = AgentFactory.create_agent(
+                self._agent_config,
+                {"obs_shape": env.obs_shape, "num_actions": env.num_actions},
+                self._common_config.num_envs,
+                self._common_config.device
+            )
         else:
             raise ValueError(f"Unknown agent type: {agent_type}")
-    
-    def _create_ppo_agent(self, env: Env) -> agent.RecurrentPPO:
-        config = instance_from_dict(agent.RecurrentPPOConfig, self._agent_config)
-        network = net.SelfiesRecurrentPPONet(
-            env.obs_shape[0],
-            env.num_actions
-        )
-        if self._pretrained is not None:
-            network.load_state_dict(self._pretrained["model"], strict=False)
-        trainer = drl.Trainer(optim.Adam(
-            network.parameters(),
-            lr=self._common_config.lr
-        )).enable_grad_clip(network.parameters(), max_norm=self._common_config.grad_clip_max_norm)
-        
-        return agent.RecurrentPPO(
-            config=config,
-            network=network,
-            trainer=trainer,
-            num_envs=self._common_config.num_envs,
-            device=self._common_config.device
-        )
-    
-    def _create_rnd_agent(self, env: Env) -> agent.RecurrentPPORND:
-        config = instance_from_dict(agent.RecurrentPPORNDConfig, self._agent_config)
-        network = net.SelfiesRecurrentPPORNDNet(
-            env.obs_shape[0],
-            env.num_actions
-        )
-        if self._pretrained is not None:
-            network.load_state_dict(self._pretrained["model"], strict=False)
-        trainer = drl.Trainer(optim.Adam(
-            network.parameters(),
-            lr=self._common_config.lr
-        )).enable_grad_clip(network.parameters(), max_norm=self._common_config.grad_clip_max_norm)
-        
-        return agent.RecurrentPPORND(
-            config=config,
-            network=network,
-            trainer=trainer,
-            num_envs=self._common_config.num_envs,
-            device=self._common_config.device
-        )
-        
-    def _create_pretrained_agent(self, env: Env) -> agent.PretrainedRecurrentAgent:
-        assert env.obs_shape[0] == env.num_actions
-        network = net.SelfiesPretrainedNet(
-            env.num_actions,
-        )
-        if self._pretrained is not None:
-            network.load_state_dict(self._pretrained["model"], strict=False)
-        return agent.PretrainedRecurrentAgent(
-            network=network,
-            num_envs=self._common_config.num_envs,
-            device=self._common_config.device
-        )
-        
+            
+        # Load pretrained weights if available
+        if self._pretrained is not None and hasattr(agent_instance, "_network"):
+            agent_instance._network.load_state_dict(self._pretrained["model"], strict=False)
+            
+        return agent_instance
+
 class MolRLInferenceFactory:
     @staticmethod
     def from_yaml(file_path: str) -> "MolRLInferenceFactory":
@@ -231,7 +346,10 @@ class MolRLInferenceFactory:
         try:
             agent = self._create_agent(env)
             agent = self._load_agent(agent)
-            agent = agent.inference_agent(num_envs=env.num_envs, device=self._inference_config.get("device", self._common_config.device))
+            agent = agent.inference_agent(
+                num_envs=env.num_envs,
+                device=self._inference_config.get("device", self._common_config.device)
+            )
         except TypeError:
             raise ConfigParsingError("Invalid Agent config. Missing arguments or wrong type.")
         except FileNotFoundError as e:
@@ -283,71 +401,45 @@ class MolRLInferenceFactory:
     
     def _create_agent(self, env: Env) -> agent.Agent:
         agent_type = self._agent_config["type"].lower()
+        num_envs = self._inference_config.get("num_envs", 1)
+        device = self._inference_config.get("device", self._common_config.device)
+        
         if agent_type == "ppo":
-            return self._create_ppo_agent(env)
+            agent_instance = AgentFactory.create_agent(
+                self._agent_config,
+                {"obs_shape": env.obs_shape, "num_actions": env.num_actions},
+                num_envs,
+                device
+            )
         elif agent_type == "rnd":
-            return self._create_rnd_agent(env)
+            agent_instance = AgentFactory.create_agent(
+                self._agent_config,
+                {"obs_shape": env.obs_shape, "num_actions": env.num_actions},
+                num_envs,
+                device
+            )
         elif agent_type == "pretrained":
-            return self._create_pretrained_agent(env)
+            agent_instance = AgentFactory.create_agent(
+                self._agent_config,
+                {"num_actions": env.num_actions},
+                num_envs,
+                device
+            )
+        elif agent_type == "dreamerv3":
+            agent_instance = AgentFactory.create_agent(
+                self._agent_config,
+                {"obs_shape": env.obs_shape, "num_actions": env.num_actions},
+                num_envs,
+                device
+            )
         else:
             raise ValueError(f"Unknown agent type: {agent_type}")
-        
-    def _create_ppo_agent(self, env: Env) -> agent.RecurrentPPO:
-        config = instance_from_dict(agent.RecurrentPPOConfig, self._agent_config)
-        network = net.SelfiesRecurrentPPONet(
-            env.obs_shape[0],
-            env.num_actions
-        )
-        if self._pretrained is not None:
-            network.load_state_dict(self._pretrained["model"], strict=False)
-        trainer = drl.Trainer(optim.Adam(
-            network.parameters(),
-            lr=self._common_config.lr
-        )).enable_grad_clip(network.parameters(), max_norm=self._common_config.grad_clip_max_norm)
-        
-        return agent.RecurrentPPO(
-            config=config,
-            network=network,
-            trainer=trainer,
-            num_envs=self._common_config.num_envs,
-            device=self._common_config.device
-        )
-    
-    def _create_rnd_agent(self, env: Env) -> agent.RecurrentPPORND:
-        config = instance_from_dict(agent.RecurrentPPORNDConfig, self._agent_config)
-        temperature = self._inference_config.get("temperature", 1.0)
-        network = net.SelfiesRecurrentPPORNDNet(
-            env.obs_shape[0],
-            env.num_actions,
-            temperature=temperature
-        )
-        if self._pretrained is not None:
-            network.load_state_dict(self._pretrained["model"], strict=False)
-        trainer = drl.Trainer(optim.Adam(
-            network.parameters(),
-            lr=self._common_config.lr
-        )).enable_grad_clip(network.parameters(), max_norm=self._common_config.grad_clip_max_norm)
-        
-        return agent.RecurrentPPORND(
-            config=config,
-            network=network,
-            trainer=trainer,
-            num_envs=self._common_config.num_envs,
-            device=self._common_config.device
-        )
-        
-    def _create_pretrained_agent(self, env: Env) -> agent.PretrainedRecurrentAgent:
-        assert env.obs_shape[0] == env.num_actions
-        network = net.SelfiesPretrainedNet(
-            env.num_actions,
-        )
-        if self._pretrained is not None:
-            network.load_state_dict(self._pretrained["model"], strict=False)
-        return agent.PretrainedRecurrentAgent(
-            network=network,
-            num_envs=self._common_config.num_envs,
-            device=self._common_config.device
-        )
+            
+        # Load pretrained weights if available
+        if self._pretrained is not None and hasattr(agent_instance, "_network"):
+            agent_instance._network.load_state_dict(self._pretrained["model"], strict=False)
+            
+        return agent_instance
         
     def _load_agent(self, agent: agent.Agent) -> agent.Agent:
         ckpt = self._inference_config.get("ckpt", "best")

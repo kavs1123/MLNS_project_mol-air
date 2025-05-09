@@ -258,7 +258,7 @@ class ChemEnv(Env):
         # case 1: the episode is terminated at the initial time step
         # case 2: the molecule is invalid
         # then take penalty
-        take_penalty = (self._time_step == 0 and terminal_cond != ChemEnv.TerminalCondition.NONE) or (ChemEnv.TerminalCondition.INVALID in terminal_cond)   
+        take_penalty = (self._time_step == 0 and terminal_cond != ChemEnv.TerminalCondition.NONE) or (ChemEnv.TerminalCondition.INVALID in terminal_cond) or (self._time_step == 0 and terminal_cond == ChemEnv.TerminalCondition.STOP_TOKEN)
         terminated = terminal_cond != ChemEnv.TerminalCondition.NONE
         
         if take_penalty:
@@ -266,7 +266,7 @@ class ChemEnv(Env):
             self._current_total_prop = None
             return -1.0, True
         
-        reward = 0.0
+        reward = 0.0        
         
         # calculate the reward only if the episode is terminated
         if self._config.final_only and terminated:

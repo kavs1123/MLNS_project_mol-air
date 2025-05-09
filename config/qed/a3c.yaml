@@ -1,0 +1,21 @@
+QED-A3C:
+  Agent:
+    type: A3C
+    n_steps: 150
+    seq_len: 35
+    seq_mini_batch_size: 16
+    padding_value: 0.0
+    gamma: 1.0
+    lam: 0.95
+    entropy_coef: 0.001
+    critic_loss_coef: 0.5
+    learning_rate: 0.07
+    grad_norm_clip: 160.0
+  Env:
+      qed_coef: 1.0
+  Train:
+    num_envs: 32
+    seed: 0
+    total_time_steps: 120000
+    summary_freq: 500
+    device: cuda

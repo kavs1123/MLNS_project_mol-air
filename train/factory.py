@@ -140,8 +140,14 @@ class MolRLTrainFactory:
         agent_type = self._agent_config["type"].lower()
         if agent_type == "ppo":
             return self._create_ppo_agent(env)
-        elif agent_type == "rnd":
-            return self._create_rnd_agent(env)
+        elif agent_type == "a3c":
+            return self._create_a3c_agent(env)
+        elif agent_type == "sac":
+            return self._create_sac_agent(env)
+        elif agent_type == "a3c_rnd":
+            return self._create_a3c_rnd_agent(env)
+        elif agent_type == "ppo_rnd":
+            return self._create_ppo_rnd_agent(env)
         elif agent_type == "pretrained":
             return self._create_pretrained_agent(env)
         else:
@@ -168,7 +174,7 @@ class MolRLTrainFactory:
             device=self._common_config.device
         )
     
-    def _create_rnd_agent(self, env: Env) -> agent.RecurrentPPORND:
+    def _create_ppo_rnd_agent(self, env: Env) -> agent.RecurrentPPORND:
         config = instance_from_dict(agent.RecurrentPPORNDConfig, self._agent_config)
         network = net.SelfiesRecurrentPPORNDNet(
             env.obs_shape[0],
@@ -198,6 +204,69 @@ class MolRLTrainFactory:
             network.load_state_dict(self._pretrained["model"], strict=False)
         return agent.PretrainedRecurrentAgent(
             network=network,
+            num_envs=self._common_config.num_envs,
+            device=self._common_config.device
+        )
+    
+    def _create_a3c_agent(self, env: Env) -> agent.RecurrentA3C:
+        config = instance_from_dict(agent.RecurrentA3CConfig, self._agent_config)
+        network = net.SelfiesRecurrentA3CNet(
+            env.obs_shape[0],
+            env.num_actions
+        )
+        if self._pretrained is not None:
+            network.load_state_dict(self._pretrained["model"], strict=False)
+        trainer = drl.Trainer(optim.Adam(
+            network.parameters(),
+            lr=self._common_config.lr
+        )).enable_grad_clip(network.parameters(), max_norm=self._common_config.grad_clip_max_norm)
+        
+        return agent.RecurrentA3C(
+            config=config,
+            network=network,
+            trainer=trainer,
+            num_envs=self._common_config.num_envs,
+            device=self._common_config.device
+        )
+    
+    def _create_a3c_rnd_agent(self, env: Env) -> agent.RecurrentA3CRND:
+        config = instance_from_dict(agent.RecurrentA3CRNDConfig, self._agent_config)
+        network = net.SelfiesRecurrentA3CRNDNet(
+            env.obs_shape[0],
+            env.num_actions
+        )
+        if self._pretrained is not None:
+            network.load_state_dict(self._pretrained["model"], strict=False)
+        trainer = drl.Trainer(optim.Adam(
+            network.parameters(),
+            lr=self._common_config.lr
+        )).enable_grad_clip(network.parameters(), max_norm=self._common_config.grad_clip_max_norm)
+        
+        return agent.RecurrentA3CRND(
+            config=config,
+            network=network,
+            trainer=trainer,
+            num_envs=self._common_config.num_envs,
+            device=self._common_config.device
+        )
+    
+    def _create_sac_agent(self, env: Env) -> agent.RecurrentSAC:
+        config = instance_from_dict(agent.RecurrentSACConfig, self._agent_config)
+        network = net.SelfiesRecurrentSACNet(
+            env.obs_shape[0],
+            env.num_actions
+        )
+        if self._pretrained is not None:
+            network.load_state_dict(self._pretrained["model"], strict=False)
+        trainer = drl.Trainer(optim.Adam(
+            network.parameters(),
+            lr=self._common_config.lr
+        )).enable_grad_clip(network.parameters(), max_norm=self._common_config.grad_clip_max_norm)
+        
+        return agent.RecurrentSAC(
+            config=config,
+            network=network,
+            trainer=trainer,
             num_envs=self._common_config.num_envs,
             device=self._common_config.device
         )
@@ -285,8 +354,14 @@ class MolRLInferenceFactory:
         agent_type = self._agent_config["type"].lower()
         if agent_type == "ppo":
             return self._create_ppo_agent(env)
-        elif agent_type == "rnd":
-            return self._create_rnd_agent(env)
+        elif agent_type == "a3c":
+            return self._create_a3c_agent(env)
+        elif agent_type == "sac":
+            return self._create_sac_agent(env)
+        elif agent_type == "a3c_rnd":
+            return self._create_a3c_rnd_agent(env)
+        elif agent_type == "ppo_rnd":
+            return self._create_ppo_rnd_agent(env)
         elif agent_type == "pretrained":
             return self._create_pretrained_agent(env)
         else:
@@ -313,7 +388,7 @@ class MolRLInferenceFactory:
             device=self._common_config.device
         )
     
-    def _create_rnd_agent(self, env: Env) -> agent.RecurrentPPORND:
+    def _create_ppo_rnd_agent(self, env: Env) -> agent.RecurrentPPORND:
         config = instance_from_dict(agent.RecurrentPPORNDConfig, self._agent_config)
         temperature = self._inference_config.get("temperature", 1.0)
         network = net.SelfiesRecurrentPPORNDNet(
@@ -329,6 +404,69 @@ class MolRLInferenceFactory:
         )).enable_grad_clip(network.parameters(), max_norm=self._common_config.grad_clip_max_norm)
         
         return agent.RecurrentPPORND(
+            config=config,
+            network=network,
+            trainer=trainer,
+            num_envs=self._common_config.num_envs,
+            device=self._common_config.device
+        )
+        
+    def _create_a3c_agent(self, env: Env) -> agent.RecurrentA3C:
+        config = instance_from_dict(agent.RecurrentA3CConfig, self._agent_config)
+        network = net.SelfiesRecurrentA3CNet(
+            env.obs_shape[0],
+            env.num_actions
+        )
+        if self._pretrained is not None:
+            network.load_state_dict(self._pretrained["model"], strict=False)
+        trainer = drl.Trainer(optim.Adam(
+            network.parameters(),
+            lr=self._common_config.lr
+        )).enable_grad_clip(network.parameters(), max_norm=self._common_config.grad_clip_max_norm)
+        
+        return agent.RecurrentA3C(
+            config=config,
+            network=network,
+            trainer=trainer,
+            num_envs=self._common_config.num_envs,
+            device=self._common_config.device
+        )
+    
+    def _create_a3c_rnd_agent(self, env: Env) -> agent.RecurrentA3CRND:
+        config = instance_from_dict(agent.RecurrentA3CRNDConfig, self._agent_config)
+        network = net.SelfiesRecurrentA3CRNDNet(
+            env.obs_shape[0],
+            env.num_actions
+        )
+        if self._pretrained is not None:
+            network.load_state_dict(self._pretrained["model"], strict=False)
+        trainer = drl.Trainer(optim.Adam(
+            network.parameters(),
+            lr=self._common_config.lr
+        )).enable_grad_clip(network.parameters(), max_norm=self._common_config.grad_clip_max_norm)
+        
+        return agent.RecurrentA3CRND(
+            config=config,
+            network=network,
+            trainer=trainer,
+            num_envs=self._common_config.num_envs,
+            device=self._common_config.device
+        )
+    
+    def _create_sac_agent(self, env: Env) -> agent.RecurrentSAC:
+        config = instance_from_dict(agent.RecurrentSACConfig, self._agent_config)
+        network = net.SelfiesRecurrentSACNet(
+            env.obs_shape[0],
+            env.num_actions
+        )
+        if self._pretrained is not None:
+            network.load_state_dict(self._pretrained["model"], strict=False)
+        trainer = drl.Trainer(optim.Adam(
+            network.parameters(),
+            lr=self._common_config.lr
+        )).enable_grad_clip(network.parameters(), max_norm=self._common_config.grad_clip_max_norm)
+        
+        return agent.RecurrentSAC(
             config=config,
             network=network,
             trainer=trainer,

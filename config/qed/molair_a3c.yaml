@@ -1,0 +1,29 @@
+QED-MolAIR_A3C:
+  Agent:
+    type: A3C_RND
+    n_steps: 64
+    epoch : 6
+    seq_len: 35
+    seq_mini_batch_size: 16
+    padding_value: 0.0
+    gamma: 1.0
+    gamma_n: 0.99
+    lam: 0.99
+    nonepi_adv_coef: 1.0
+    critic_loss_coef: 0.9
+    learning_rate: 0.07
+    grad_norm_clip: 160.0
+    rnd_pred_exp_proportion: 0.75
+    init_norm_steps: 50
+    obs_norm_clip_range: [-10.0, 10.0]
+    hidden_state_norm_clip_range: [-10.0, 10.0]
+  Env:
+    qed_coef: 1.0
+  Train:
+    num_envs: 64
+    seed: 0
+    total_time_steps: 120000
+    summary_freq: 500
+    device: cuda
+  CountIntReward:
+    crwd_coef: 0.001

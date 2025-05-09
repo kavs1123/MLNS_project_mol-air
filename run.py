@@ -1,6 +1,9 @@
 import argparse
 from train import MolRLTrainFactory, MolRLInferenceFactory, MolRLPretrainFactory
 
+import os
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("config_path", type=str, help="path to config file")

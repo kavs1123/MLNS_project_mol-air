@@ -1,0 +1,21 @@
+PLogP-A3C:
+  Agent:
+    type: A3C
+    n_steps: 64
+    seq_len: 35
+    seq_mini_batch_size: 16
+    padding_value: 0.0
+    gamma: 0.99
+    lam: 0.95
+    entropy_coef: 0.001
+    critic_loss_coef: 0.5
+    learning_rate: 0.0007
+    grad_norm_clip: 40.0
+  Env:
+    plogp_coef: 1.0
+  Train:
+    num_envs: 64
+    seed: 0
+    total_time_steps: 120000
+    summary_freq: 1000
+    device: cuda

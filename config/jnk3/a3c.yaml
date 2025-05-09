@@ -1,12 +1,16 @@
-JNK3-MolAIR:
+JNK3-A3C:
   Agent:
-    type: PPO_RND
+    type: A3C
     n_steps: 64
-    epoch: 6
     seq_len: 35
     seq_mini_batch_size: 16
-    gamma: 1.0
-    nonepi_adv_coef: 0.05
+    padding_value: 0.0
+    gamma: 0.99
+    lam: 0.95
+    entropy_coef: 0.001
+    critic_loss_coef: 0.5
+    learning_rate: 0.0007
+    grad_norm_clip: 40.0
   Env:
     jnk3_coef: 1.0
     init_selfies: ['[C][C][C]', '[C][=C][C]', '[C][C][=N]', '[C][N][C]', '[C][O][C]']
@@ -16,5 +20,3 @@ JNK3-MolAIR:
     total_time_steps: 120000
     summary_freq: 1000
     device: cuda
-  CountIntReward:
-    crwd_coef: 0.0005

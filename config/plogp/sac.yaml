@@ -1,19 +1,18 @@
-PLogP-MolAIR:
+PLogP-SAC:
   Agent:
-    type: ppo_RND
-    n_steps: 64
+    type: SAC
+    n_steps: 128
     epoch: 6
     seq_len: 35
     seq_mini_batch_size: 16
     gamma: 1.0
-    nonepi_adv_coef: 1.0
+    init_alpha : 0.2
+    target_entropy : -0.98
   Env:
     plogp_coef: 1.0
   Train:
     num_envs: 64
     seed: 0
     total_time_steps: 120000
-    summary_freq: 1000
+    summary_freq: 100
     device: cuda
-  CountIntReward:
-    crwd_coef: 0.01

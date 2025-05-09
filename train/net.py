@@ -6,8 +6,8 @@ import torch.nn.init as init
 
 import drl.agent as agent
 import drl.net as net
-from drl.policy import CategoricalPolicy
-from drl.policy_dist import CategoricalDist
+from drl.policy import CategoricalPolicy,SACPolicy
+from drl.policy_dist import CategoricalDist, CategoricalSACDist
 
 
 def init_linear_weights(model: nn.Module) -> None:
@@ -166,6 +166,51 @@ class SelfiesRecurrentPPONet(nn.Module, agent.RecurrentPPONetwork):
         
         return policy_dist_seq, state_value_seq, next_seq_hidden_state
     
+class SelfiesRecurrentSACNet(nn.Module, agent.RecurrentSACNetwork):
+    def __init__(self, in_features: int, num_actions: int) -> None:
+        super().__init__()
+        
+        # Actor-Critic
+        self._actor_critic_shared_net = SelfiesRecurrentPPOSharedNet(in_features)
+        self._actor = SACPolicy(self._actor_critic_shared_net.out_features, num_actions)
+        self._critic1 = nn.Linear(self._actor_critic_shared_net.out_features, 1)
+        self._critic2 = nn.Linear(self._actor_critic_shared_net.out_features, 1)
+
+        self._targ_critic1 = nn.Linear(self._actor_critic_shared_net.out_features, 1)
+        self._targ_critic2 = nn.Linear(self._actor_critic_shared_net.out_features, 1)
+
+        init_linear_weights(self)
+
+        self._targ_critic1.load_state_dict(self._critic1.state_dict())
+        self._targ_critic2.load_state_dict(self._critic2.state_dict())
+        
+        
+    def model(self) -> nn.Module:
+        return self
+        
+    def hidden_state_shape(self) -> Tuple[int, int]:
+        return (
+            self._actor_critic_shared_net.n_recurrent_layers,
+            self._actor_critic_shared_net.hidden_state_dim
+        )
+    
+    def forward(
+        self, 
+        obs_seq: torch.Tensor, 
+        hidden_state: torch.Tensor
+    ) -> Tuple[CategoricalSACDist, torch.Tensor, torch.Tensor]:
+        # feed forward to the shared network
+        embedding_seq, next_seq_hidden_state = self._actor_critic_shared_net(obs_seq, hidden_state)
+        
+        # feed forward to actor-critic layer
+        policy_dist_seq = self._actor(embedding_seq)
+        state_value_seq1 = self._critic1(embedding_seq)
+        state_value_seq2 = self._critic2(embedding_seq)
+
+        state_value_seq = torch.min(state_value_seq1, state_value_seq2)
+        
+        return policy_dist_seq, state_value_seq, next_seq_hidden_state
+    
 class SelfiesRecurrentPPORNDNet(nn.Module, agent.RecurrentPPORNDNetwork):
     def __init__(self, in_features: int, num_actions: int, temperature: float = 1.0) -> None:
         super().__init__()
@@ -207,3 +252,87 @@ class SelfiesRecurrentPPORNDNet(nn.Module, agent.RecurrentPPORNDNetwork):
     
     def forward_rnd(self, obs: torch.Tensor, hidden_state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         return self._rnd_net(obs, hidden_state)
+
+
+class SelfiesRecurrentA3CNet(nn.Module, agent.RecurrentA3CNetwork):
+    def __init__(self, in_features: int, num_actions: int) -> None:
+        super().__init__()
+        
+        # Actor-Critic
+        self._actor_critic_shared_net = SelfiesRecurrentPPOSharedNet(in_features)
+        self._actor = CategoricalPolicy(self._actor_critic_shared_net.out_features, num_actions)
+        self._critic = nn.Linear(self._actor_critic_shared_net.out_features, 1)
+        
+        init_linear_weights(self)
+        
+    def model(self) -> nn.Module:
+        return self
+        
+    def hidden_state_shape(self) -> Tuple[int, int]:
+        return (
+            self._actor_critic_shared_net.n_recurrent_layers,
+            self._actor_critic_shared_net.hidden_state_dim
+        )
+        
+    def forward(
+        self, 
+        obs_seq: torch.Tensor, 
+        hidden_state: torch.Tensor
+    ) -> Tuple[CategoricalDist, torch.Tensor, torch.Tensor]:
+        # feed forward to the shared network
+        embedding_seq, next_seq_hidden_state = self._actor_critic_shared_net(obs_seq, hidden_state)
+        
+        # feed forward to actor-critic layer
+        policy_dist_seq = self._actor(embedding_seq)
+        state_value_seq = self._critic(embedding_seq)
+        
+        return policy_dist_seq, state_value_seq, next_seq_hidden_state
+    
+class SelfiesRecurrentA3CRNDNet(nn.Module, agent.RecurrentA3CRNDNetwork):
+    def __init__(self, in_features: int, num_actions: int) -> None:
+        super().__init__()
+        
+        # Actor-Critic
+        self._actor_critic_shared_net = SelfiesRecurrentPPOSharedNet(in_features)
+        self._actor = CategoricalPolicy(self._actor_critic_shared_net.out_features, num_actions)
+        self._ext_critic = nn.Linear(self._actor_critic_shared_net.out_features, 1)
+        self._int_critic = nn.Linear(self._actor_critic_shared_net.out_features, 1)
+        
+        # RND
+        self._rnd_net = SelfiesEmbeddedConcatRND(in_features, self.hidden_state_shape())
+                        
+        init_linear_weights(self)
+        
+    def model(self) -> nn.Module:
+        return self
+        
+    def hidden_state_shape(self) -> Tuple[int, int]:
+        return (
+            self._actor_critic_shared_net.n_recurrent_layers, 
+            self._actor_critic_shared_net.hidden_state_dim
+        )
+        
+    def forward_actor_critic(
+        self, 
+        obs_seq: torch.Tensor, 
+        hidden_state: torch.Tensor
+    ) -> Tuple[CategoricalDist, torch.Tensor, torch.Tensor, torch.Tensor]:        
+        # feed forward to the shared net
+        embedding_seq, next_seq_hidden_state = self._actor_critic_shared_net(obs_seq, hidden_state)
+        
+        # feed forward to actor-critic layer
+        policy_dist_seq = self._actor(embedding_seq)
+        ext_state_value_seq = self._ext_critic(embedding_seq)
+        int_state_value_seq = self._int_critic(embedding_seq)
+        
+        return policy_dist_seq, ext_state_value_seq, int_state_value_seq, next_seq_hidden_state
+    
+    def forward_rnd(self, obs: torch.Tensor, hidden_state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self._rnd_net(obs, hidden_state)
+    def forward_rnd_target(self, obs: torch.Tensor, hidden_state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self._rnd_net._target(obs, hidden_state)
+    def forward_rnd_predictor(self, obs: torch.Tensor, hidden_state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self._rnd_net._predictor(obs, hidden_state)
+    def forward_rnd_predictor_target(self, obs: torch.Tensor, hidden_state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self._rnd_net._target(obs, hidden_state)
+

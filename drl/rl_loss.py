@@ -35,7 +35,7 @@ def gae(
         discounted_gae = delta[:, t] + not_terminated[:, t] * discount_factor * discounted_gae
         advantage[:, t] = discounted_gae
      
-    return advantage
+    return advantage 
 
 def bellman_value_loss(
     predicted_state_value: torch.Tensor,
@@ -109,3 +109,64 @@ def rnd_loss(
     mask = (mask < rnd_pred_exp_proportion).to(dtype=loss.dtype)
     loss = (loss * mask).sum() / torch.max(mask.sum(), torch.tensor(1.0, device=loss.device))
     return loss
+
+def a3c_loss(
+    action_log_prob: torch.Tensor,
+    advantage: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Asynchronous Advantage Actor-Critic (A3C) loss.
+
+    Args:
+        action_log_prob (Tensor): log probabilities of actions `(batch_size, 1)`
+        advantage (Tensor): advantage values `(batch_size, 1)`
+        predicted_state_value (Tensor): predicted state values `(batch_size, 1)`
+        target_state_value (Tensor): target state values `(batch_size, 1)`
+        value_loss_coef (float, optional): coefficient for value loss. Defaults to 0.5.
+        entropy_coef (float, optional): coefficient for entropy regularization. Defaults to 0.01.
+
+    Returns:
+        loss (Tensor): scalar value
+    """
+    # Policy loss (actor loss)
+    policy_loss = -(action_log_prob * advantage).mean()
+
+
+    # Total loss
+    return policy_loss
+
+def pi_loss(
+    alpha: torch.Tensor,
+    action_log_prob: torch.Tensor,
+    state_value: torch.Tensor
+) -> torch.Tensor:
+    """
+    Policy loss for SAC.
+
+    Args:
+        alpha (Tensor): temperature parameter `(batch_size, 1)`
+        action_log_prob (Tensor): log probabilities of actions `(batch_size, 1)`
+        state_value (Tensor): predicted state values `(batch_size, 1)`
+
+    Returns:
+        loss (Tensor): scalar value
+    """
+    return -(alpha * action_log_prob - state_value).mean()
+
+def alpha_loss(
+    alpha: torch.Tensor,
+    action_log_prob: torch.Tensor,
+    target_entropy: float
+) -> torch.Tensor:
+    """
+    Temperature loss for SAC.
+
+    Args:
+        alpha (Tensor): temperature parameter `(batch_size, 1)`
+        action_log_prob (Tensor): log probabilities of actions `(batch_size, 1)`
+        target_entropy (float): target entropy
+
+    Returns:
+        loss (Tensor): scalar value
+    """
+    return -(alpha * (action_log_prob + target_entropy)).mean()

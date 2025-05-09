@@ -217,11 +217,11 @@ class SelfiesDreamerV3Net(DreamerNetwork):
         super().__init__(
             in_features=in_features,
             num_actions=num_actions,
-            hidden_size=256,
+            hidden_size=128,  # Reduced from 256
             state_size=32,
-            rnn_hidden_size=256,
-            discrete_size=32,
-            category_size=32,
+            rnn_hidden_size=128,  # Reduced from 256
+            discrete_size=16,  # Reduced from 32
+            category_size=16,  # Reduced from 32
             layer_norm=True
         )
         

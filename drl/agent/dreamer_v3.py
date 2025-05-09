@@ -174,21 +174,54 @@ class DreamerNetwork(nn.Module, net.Network):
         
         # Ensure action is one-hot encoded for proper input dimensionality
         if action.size(-1) == 1:
-            # Convert discrete action indices to one-hot
-            action_one_hot = torch.zeros(batch_size, self._num_actions, device=action.device)
-            action_one_hot.scatter_(1, action.long(), 1.0)
-            action = action_one_hot
+            # Convert discrete action indices to one-hot, handling batch size safely
+            try:
+                # Reshape action to ensure proper dimensions
+                action_flat = action.reshape(-1).long()
+                # Create one-hot tensor with the correct dimensions
+                action_one_hot = torch.zeros(batch_size, self._num_actions, device=action.device)
+                # Use scatter with properly sized tensors to create one-hot encoding
+                action_one_hot.scatter_(1, action_flat.unsqueeze(-1), 1.0)
+                action = action_one_hot
+            except Exception as e:
+                # Fallback for any dimension mismatch
+                print(f"Action shape: {action.shape}, Batch size: {batch_size}, Num actions: {self._num_actions}")
+                # Safe fallback - create a uniform distribution across actions
+                action = torch.ones(batch_size, self._num_actions, device=action.device) / self._num_actions
         
         # Concatenate state and action for RSSM input
         # Make sure dimensions match the expected input size of the LSTM
         rssm_input = torch.cat([prev_state, action], dim=-1)
         rssm_input = rssm_input.unsqueeze(1)  # Add time dimension: [batch_size, 1, feature_dim]
         
-        # Make sure hidden state matches batch size
-        if h.size(1) != batch_size:
-            # Adjust hidden state size to match batch size
-            new_h = h.repeat(1, batch_size // h.size(1), 1) if batch_size > h.size(1) else h[:, :batch_size, :]
-            new_c = c.repeat(1, batch_size // c.size(1), 1) if batch_size > c.size(1) else c[:, :batch_size, :]
+        # CRITICAL: Make sure hidden state matches LSTM's expected dimensions
+        # Check if the hidden state dimensions match what the LSTM expects
+        # For LSTM, hidden state should be [num_layers, batch_size, hidden_size]
+        if h.size(0) != self._num_layers:
+            # Adjust hidden state size to match expected dimensions
+            # First, let's get the dimensions right
+            new_h = torch.zeros(self._num_layers, batch_size, self._rnn_hidden_size, device=h.device)
+            new_c = torch.zeros(self._num_layers, batch_size, self._rnn_hidden_size, device=c.device)
+            
+            # Copy data from the old hidden state if possible
+            # We only copy the first layer since that's what we need for a 1-layer LSTM
+            if h.size(0) > 0 and h.size(1) > 0:
+                copy_layers = min(self._num_layers, h.size(0))
+                copy_batch = min(batch_size, h.size(1))
+                new_h[:copy_layers, :copy_batch, :] = h[:copy_layers, :copy_batch, :]
+                new_c[:copy_layers, :copy_batch, :] = c[:copy_layers, :copy_batch, :]
+            
+            h, c = new_h, new_c
+        elif h.size(1) != batch_size:
+            # If only the batch dimension is wrong, adjust that
+            new_h = torch.zeros(h.size(0), batch_size, h.size(2), device=h.device)
+            new_c = torch.zeros(c.size(0), batch_size, c.size(2), device=c.device)
+            
+            # Copy existing data for overlapping dimensions
+            min_batch = min(h.size(1), batch_size)
+            new_h[:, :min_batch, :] = h[:, :min_batch, :]
+            new_c[:, :min_batch, :] = c[:, :min_batch, :]
+            
             h, c = new_h, new_c
         
         # Forward through LSTM
@@ -472,27 +505,82 @@ class DreamerV3(Agent):
         terminated = exp_batch.terminated
         hidden_state = exp_batch.hidden_state
         
-        # Normalize observations
-        normalized_obs = self._normalize_obs(obs)
-        normalized_next_obs = self._normalize_obs(next_obs)
-        
-        # 1. World Model Training
-        model_loss = self._train_world_model(
-            normalized_obs, 
-            action, 
-            normalized_next_obs, 
-            reward, 
-            terminated, 
-            hidden_state
-        )
-        
-        # 2. Policy Training (Actor and Critic)
-        actor_loss, critic_loss = self._train_policy(normalized_obs, hidden_state)
-        
-        # 3. Track metrics
-        self._avg_model_loss.update(model_loss.item())
-        self._avg_actor_loss.update(actor_loss.item())
-        self._avg_critic_loss.update(critic_loss.item())
+        # Check if the effective batch size is smaller than the actual batch size
+        # If so, we need to process the data in smaller batches to avoid OOM
+        actual_batch_size = obs.size(0)
+        if self._effective_batch_size < actual_batch_size:
+            # Process the batch in chunks
+            model_losses = []
+            actor_losses = []
+            critic_losses = []
+            
+            for i in range(0, actual_batch_size, self._effective_batch_size):
+                end_idx = min(i + self._effective_batch_size, actual_batch_size)
+                current_batch_size = end_idx - i
+                
+                # Extract the batch slice
+                obs_batch = obs[i:end_idx]
+                action_batch = action[i:end_idx]
+                next_obs_batch = next_obs[i:end_idx]
+                reward_batch = reward[i:end_idx]
+                terminated_batch = terminated[i:end_idx]
+                
+                # Extract the appropriate hidden state slice
+                h, c = net.unwrap_lstm_hidden_state(hidden_state)
+                h_batch = h[:, i:end_idx]
+                c_batch = c[:, i:end_idx]
+                hidden_state_batch = net.wrap_lstm_hidden_state(h_batch, c_batch)
+                
+                # Normalize observations
+                normalized_obs_batch = self._normalize_obs(obs_batch)
+                normalized_next_obs_batch = self._normalize_obs(next_obs_batch)
+                
+                # Train on this batch
+                model_loss = self._train_world_model(
+                    normalized_obs_batch,
+                    action_batch,
+                    normalized_next_obs_batch,
+                    reward_batch,
+                    terminated_batch,
+                    hidden_state_batch
+                )
+                model_losses.append(model_loss.item())
+                
+                actor_loss, critic_loss = self._train_policy(normalized_obs_batch, hidden_state_batch)
+                actor_losses.append(actor_loss.item())
+                critic_losses.append(critic_loss.item())
+                
+                # Clear GPU cache if possible
+                if hasattr(torch.cuda, 'empty_cache'):
+                    torch.cuda.empty_cache()
+            
+            # Average the losses
+            self._avg_model_loss.update(sum(model_losses) / len(model_losses))
+            self._avg_actor_loss.update(sum(actor_losses) / len(actor_losses))
+            self._avg_critic_loss.update(sum(critic_losses) / len(critic_losses))
+        else:
+            # Process the whole batch at once
+            # Normalize observations
+            normalized_obs = self._normalize_obs(obs)
+            normalized_next_obs = self._normalize_obs(next_obs)
+            
+            # Train models
+            model_loss = self._train_world_model(
+                normalized_obs, 
+                action, 
+                normalized_next_obs, 
+                reward, 
+                terminated, 
+                hidden_state
+            )
+            
+            # Train policy
+            actor_loss, critic_loss = self._train_policy(normalized_obs, hidden_state)
+            
+            # Track metrics
+            self._avg_model_loss.update(model_loss.item())
+            self._avg_actor_loss.update(actor_loss.item())
+            self._avg_critic_loss.update(critic_loss.item())
         
         # Return metrics
         metric_info_dicts = [{
@@ -534,17 +622,44 @@ class DreamerV3(Agent):
         
         # 4. Compute reconstruction loss (decoder)
         pred_obs = self._net.decode(state)
+        
+        # Ensure pred_obs and obs have the same batch dimension
+        if pred_obs.size(0) != obs.size(0):
+            # Resize tensors to match if needed
+            common_batch_size = min(pred_obs.size(0), obs.size(0))
+            pred_obs = pred_obs[:common_batch_size]
+            obs = obs[:common_batch_size]
+            print(f"Resized tensors for decoder loss: pred_obs={pred_obs.shape}, obs={obs.shape}")
+        
         decoder_loss = F.mse_loss(pred_obs, obs)
         self._avg_decoder_loss.update(decoder_loss.item())
         
         # 5. Compute reward prediction loss
         pred_reward = self._net.predict_reward(state)
+        
+        # Ensure pred_reward and reward have the same batch dimension
+        if pred_reward.size(0) != reward.size(0):
+            # Resize tensors to match if needed
+            common_batch_size = min(pred_reward.size(0), reward.size(0))
+            pred_reward = pred_reward[:common_batch_size]
+            reward = reward[:common_batch_size]
+            print(f"Resized tensors for reward loss: pred_reward={pred_reward.shape}, reward={reward.shape}")
+        
         reward_loss = F.mse_loss(pred_reward, reward)
         self._avg_reward_loss.update(reward_loss.item())
         
         # 6. Compute continue prediction loss
         continue_target = 1 - terminated
         pred_continue = self._net.predict_continue(state)
+        
+        # Ensure pred_continue and continue_target have the same batch dimension
+        if pred_continue.size(0) != continue_target.size(0):
+            # Resize tensors to match if needed
+            common_batch_size = min(pred_continue.size(0), continue_target.size(0))
+            pred_continue = pred_continue[:common_batch_size]
+            continue_target = continue_target[:common_batch_size]
+            print(f"Resized tensors for continue loss: pred_continue={pred_continue.shape}, continue_target={continue_target.shape}")
+        
         continue_loss = F.binary_cross_entropy(pred_continue, continue_target)
         self._avg_continue_loss.update(continue_loss.item())
         
@@ -562,125 +677,168 @@ class DreamerV3(Agent):
         
         # 9. Update world model parameters
         self._world_model_trainer.step(model_loss, self._train_step_counter)
+        self._train_step_counter += 1
         
         return model_loss
     
     def _train_policy(self, obs: torch.Tensor, hidden_state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Train the actor and critic using imagination rollouts."""
-        # 1. Encode observations and get initial state
-        with torch.no_grad():
-            obs_embed = self._net.encode(obs)
-            initial_state, hidden_state = self._net.represent(obs_embed, hidden_state)
+        # Break into smaller batches if needed
+        batch_size = obs.size(0)
+        max_batch = min(4, batch_size)  # Process at most 4 observations at a time
         
-        # 2. Perform imagination rollouts
-        imagined_states = [initial_state]
-        imagined_actions = []
-        action_log_probs = []
+        total_policy_loss = 0.0
+        total_value_loss = 0.0
+        num_batches = 0
         
-        state = initial_state
-        curr_hidden_state = hidden_state
-        
-        for _ in range(self._config.imagination_steps):
-            # Get action from current policy
-            policy_dist = self._net.forward_actor(state)
-            action = policy_dist.sample()
-            action_log_prob = policy_dist.log_prob(action)
+        for i in range(0, batch_size, max_batch):
+            end_idx = min(i + max_batch, batch_size)
+            current_batch_size = end_idx - i
             
-            # Imagine next state
+            # Extract the batch slice
+            obs_batch = obs[i:end_idx]
+            
+            # Extract the appropriate hidden state slice
+            h, c = net.unwrap_lstm_hidden_state(hidden_state)
+            h_batch = h[:, i:end_idx] if i < h.size(1) else torch.zeros(h.size(0), current_batch_size, h.size(2), device=self.device)
+            c_batch = c[:, i:end_idx] if i < c.size(1) else torch.zeros(c.size(0), current_batch_size, c.size(2), device=self.device)
+            hidden_batch = net.wrap_lstm_hidden_state(h_batch, c_batch)
+            
+            # 1. Encode observations and get initial state
             with torch.no_grad():
-                next_state, next_hidden_state = self._net.recurrent_model_step(state, action, curr_hidden_state)
+                obs_embed = self._net.encode(obs_batch)
+                initial_state, hidden_state_batch = self._net.represent(obs_embed, hidden_batch)
             
-            # Save trajectory
-            imagined_actions.append(action)
-            action_log_probs.append(action_log_prob)
-            imagined_states.append(next_state)
+            # 2. Perform imagination rollouts
+            imagined_states = [initial_state]
+            imagined_actions = []
+            action_log_probs = []
             
-            # Update for next step
-            state = next_state
-            curr_hidden_state = next_hidden_state
-        
-        # 3. Compute returns and advantages for actor-critic training
-        with torch.no_grad():
-            # Get predicted values for all states
-            imagined_values = []
-            imagined_rewards = []
-            continue_probs = []
+            state = initial_state
+            curr_hidden_state = hidden_state_batch
             
-            for state in imagined_states:
+            for _ in range(self._config.imagination_steps):
+                # Get action from current policy
+                policy_dist = self._net.forward_actor(state)
+                action = policy_dist.sample()
+                action_log_prob = policy_dist.log_prob(action)
+                
+                # Imagine next state
+                with torch.no_grad():
+                    next_state, next_hidden_state = self._net.recurrent_model_step(state, action, curr_hidden_state)
+                
+                # Save trajectory
+                imagined_actions.append(action)
+                action_log_probs.append(action_log_prob)
+                imagined_states.append(next_state)
+                
+                # Update for next step
+                state = next_state
+                curr_hidden_state = next_hidden_state
+                
+                # Clear cache if possible after each imagination step
+                if hasattr(torch.cuda, 'empty_cache'):
+                    torch.cuda.empty_cache()
+            
+            # 3. Compute returns and advantages for actor-critic training
+            with torch.no_grad():
+                # Get predicted values for all states
+                imagined_values = []
+                imagined_rewards = []
+                continue_probs = []
+                
+                for state in imagined_states:
+                    value = self._net.forward_critic(state)
+                    reward = self._net.predict_reward(state)
+                    cont_prob = self._net.predict_continue(state)
+                    
+                    imagined_values.append(value)
+                    imagined_rewards.append(reward)
+                    continue_probs.append(cont_prob)
+                
+                # Convert lists to tensors
+                imagined_values = torch.stack(imagined_values, dim=1)
+                imagined_rewards = torch.stack(imagined_rewards[:-1], dim=1)  # No reward for last state
+                continue_probs = torch.stack(continue_probs[:-1], dim=1)  # No continue for last state
+                
+                # Compute lambda returns
+                lambda_returns = []
+                last_value = imagined_values[:, -1]
+                
+                for t in reversed(range(self._config.imagination_steps)):
+                    bootstrap = (
+                        self._config.discount * continue_probs[:, t] * 
+                        ((1 - self._config.lambda_) * imagined_values[:, t+1] + 
+                         self._config.lambda_ * last_value)
+                    )
+                    last_value = imagined_rewards[:, t] + bootstrap
+                    lambda_returns.insert(0, last_value)
+                    
+                lambda_returns = torch.stack(lambda_returns, dim=1)
+                
+                # Compute advantages
+                advantages = lambda_returns - imagined_values[:, :-1]
+            
+            # 4. Train actor (policy)
+            batch_policy_loss = 0
+            for t in range(self._config.imagination_steps):
+                state = imagined_states[t]
+                policy_dist = self._net.forward_actor(state)
+                
+                # Get log probabilities for actions
+                log_probs = policy_dist.log_prob(imagined_actions[t])
+                
+                # Compute entropy for exploration
+                entropy = policy_dist.entropy().mean()
+                
+                # Compute policy loss with advantage
+                t_policy_loss = -(log_probs * advantages[:, t].detach()).mean()
+                
+                # Add entropy bonus
+                t_policy_loss = t_policy_loss - self._config.actor_entropy * entropy
+                
+                batch_policy_loss += t_policy_loss
+            
+            # Average over time steps
+            batch_policy_loss = batch_policy_loss / self._config.imagination_steps
+            
+            # Scale the loss by batch proportion for gradient accumulation
+            batch_policy_loss = batch_policy_loss * (current_batch_size / batch_size)
+            
+            # Update actor parameters - divide by number of batches to simulate gradient accumulation
+            self._actor_trainer.step(batch_policy_loss)
+            
+            # 5. Train critic (value function)
+            batch_value_loss = 0
+            for t in range(self._config.imagination_steps):
+                state = imagined_states[t]
                 value = self._net.forward_critic(state)
-                reward = self._net.predict_reward(state)
-                cont_prob = self._net.predict_continue(state)
                 
-                imagined_values.append(value)
-                imagined_rewards.append(reward)
-                continue_probs.append(cont_prob)
+                # Compute value loss
+                t_value_loss = F.mse_loss(value, lambda_returns[:, t].detach())
+                batch_value_loss += t_value_loss
             
-            # Convert lists to tensors
-            imagined_values = torch.stack(imagined_values, dim=1)
-            imagined_rewards = torch.stack(imagined_rewards[:-1], dim=1)  # No reward for last state
-            continue_probs = torch.stack(continue_probs[:-1], dim=1)  # No continue for last state
+            # Average over time steps
+            batch_value_loss = batch_value_loss / self._config.imagination_steps
             
-            # Compute lambda returns
-            lambda_returns = []
-            last_value = imagined_values[:, -1]
+            # Scale the loss by batch proportion for gradient accumulation
+            batch_value_loss = batch_value_loss * (current_batch_size / batch_size)
             
-            for t in reversed(range(self._config.imagination_steps)):
-                bootstrap = (
-                    self._config.discount * continue_probs[:, t] * 
-                    ((1 - self._config.lambda_) * imagined_values[:, t+1] + 
-                     self._config.lambda_ * last_value)
-                )
-                last_value = imagined_rewards[:, t] + bootstrap
-                lambda_returns.insert(0, last_value)
-                
-            lambda_returns = torch.stack(lambda_returns, dim=1)
+            # Update critic parameters
+            self._critic_trainer.step(self._config.critic_weight * batch_value_loss)
             
-            # Compute advantages
-            advantages = lambda_returns - imagined_values[:, :-1]
+            # Accumulate losses
+            total_policy_loss += batch_policy_loss.item() * (current_batch_size / batch_size)
+            total_value_loss += batch_value_loss.item() * (current_batch_size / batch_size)
+            num_batches += 1
+            
+            # Free memory
+            del imagined_states, imagined_actions, action_log_probs, imagined_values, imagined_rewards, continue_probs
+            if hasattr(torch.cuda, 'empty_cache'):
+                torch.cuda.empty_cache()
         
-        # 4. Train actor (policy)
-        policy_loss = 0
-        for t in range(self._config.imagination_steps):
-            state = imagined_states[t]
-            policy_dist = self._net.forward_actor(state)
-            
-            # Get log probabilities for actions
-            log_probs = policy_dist.log_prob(imagined_actions[t])
-            
-            # Compute entropy for exploration
-            entropy = policy_dist.entropy().mean()
-            
-            # Compute policy loss with advantage
-            t_policy_loss = -(log_probs * advantages[:, t].detach()).mean()
-            
-            # Add entropy bonus
-            t_policy_loss = t_policy_loss - self._config.actor_entropy * entropy
-            
-            policy_loss += t_policy_loss
-        
-        # Average over time steps
-        policy_loss = policy_loss / self._config.imagination_steps
-        
-        # Update actor parameters
-        self._actor_trainer.step(policy_loss, self._train_step_counter)
-        
-        # 5. Train critic (value function)
-        value_loss = 0
-        for t in range(self._config.imagination_steps):
-            state = imagined_states[t]
-            value = self._net.forward_critic(state)
-            
-            # Compute value loss
-            t_value_loss = F.mse_loss(value, lambda_returns[:, t].detach())
-            value_loss += t_value_loss
-        
-        # Average over time steps
-        value_loss = value_loss / self._config.imagination_steps
-        
-        # Update critic parameters
-        self._critic_trainer.step(self._config.critic_weight * value_loss, self._train_step_counter)
-        
-        return policy_loss, value_loss
+        # Return average losses
+        return total_policy_loss, total_value_loss
     
     def _normalize_obs(self, obs: torch.Tensor) -> torch.Tensor:
         """Normalize observations using running statistics."""

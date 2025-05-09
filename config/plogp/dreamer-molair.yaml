@@ -1,11 +1,11 @@
 PLogP-DreamerV3-MolAIR:
   Agent:
     type: DreamerV3
-    n_steps: 64
+    n_steps: 32  # Reduced from 64
     lr: 3e-4
     discount: 1.0
     lambda_: 0.95
-    imagination_steps: 5
+    imagination_steps: 3  # Reduced from 5
     actor_entropy: 1e-2
     critic_weight: 0.5
     model_weight: 0.5
@@ -14,7 +14,8 @@ PLogP-DreamerV3-MolAIR:
     kl_loss_scale: 1.0
     decoder_weight: 1.0
     grad_clip: 100.0
-    init_norm_steps: 100
+    init_norm_steps: 50  # Reduced from 100
+    effective_batch_size: 8  # Added to limit batch size
   Env:
     plogp_coef: 1.0
   Train:

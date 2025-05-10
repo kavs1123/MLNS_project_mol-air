@@ -1,0 +1,34 @@
+GSK3B-MolAIR:
+  Agent:
+    type: ppo_RND
+    n_steps: 64
+    epoch: 6
+    seq_len: 35
+    seq_mini_batch_size: 16
+    gamma: 1.0
+    gamma_n: 0.99
+    nonepi_adv_coef: 1.0
+  Env:
+    plogp_coef: 0.0
+    qed_coef: 0.0
+    similarity_coef: 0.0
+    gsk3b_coef: 1.0
+    jnk3_coef: 0.0
+    drd2_coef: 0.0
+    sa_coef: 0.0
+    max_str_len: 71
+    vocab_path: "./data/drd2+qed+sa/vocab.json"
+    final_only: True
+  Train:
+    num_envs: 64
+    seed: 0
+    total_time_steps: 120000
+    summary_freq: 1000
+    agent_save_freq: 12000
+    device: cuda
+    lr: 0.0001
+    grad_clip_max_norm: 0.5
+    num_inference_envs: 10
+    n_inference_episodes: 100
+  CountIntReward:
+    crwd_coef: 0.01
